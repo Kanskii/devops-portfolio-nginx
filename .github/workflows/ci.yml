@@ -73,9 +73,20 @@ jobs:
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
       GHCR_PAT: ${{ secrets.GHCR_PAT }}
-    if: ${{ (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') && env.SSH_HOST != '' && env.SSH_PRIVATE_KEY != '' && env.SSH_USER != '' }}
+    if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' }}
     steps:
+      - id: check
+        name: Check deploy secrets
+        run: |
+          if [ -z "$SSH_HOST" ] || [ -z "$SSH_PRIVATE_KEY" ] || [ -z "$SSH_USER" ]; then
+            echo "proceed=false" >> $GITHUB_OUTPUT
+            echo "Skipping deploy: SSH secrets are not set"
+          else
+            echo "proceed=true" >> $GITHUB_OUTPUT
+          fi
+
       - name: Deploy via SSH
+        if: ${{ steps.check.outputs.proceed == 'true' }}
         uses: appleboy/ssh-action@v0.1.7
         with:
           host: ${{ env.SSH_HOST }}
@@ -84,15 +95,15 @@ jobs:
           port: ${{ env.SSH_PORT }}
           script: |
             set -e
-            if [ -n "${{ env.DOCKERHUB_USERNAME }}" ] && [ -n "${{ env.DOCKERHUB_TOKEN }}" ]; then
-              echo "${{ env.DOCKERHUB_TOKEN }}" | docker login -u "${{ env.DOCKERHUB_USERNAME }}" --password-stdin || true
-              IMAGE=docker.io/${{ env.DOCKERHUB_USERNAME }}/devops-portfolio:latest
+            if [ -n "$DOCKERHUB_USERNAME" ] && [ -n "$DOCKERHUB_TOKEN" ]; then
+              echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin || true
+              IMAGE=docker.io/$DOCKERHUB_USERNAME/devops-portfolio:latest
             else
               IMAGE=ghcr.io/${{ github.repository_owner }}/devops-portfolio:latest
             fi
 
-            if [ -n "${{ env.GHCR_PAT }}" ]; then
-              echo "${{ env.GHCR_PAT }}" | docker login ghcr.io -u "${{ github.repository_owner }}" --password-stdin || true
+            if [ -n "$GHCR_PAT" ]; then
+              echo "$GHCR_PAT" | docker login ghcr.io -u "${{ github.repository_owner }}" --password-stdin || true
             fi
 
             docker pull "$IMAGE"
