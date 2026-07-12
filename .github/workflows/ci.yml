@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: ["main"]
+    branches: ["main", "master"]
   pull_request:
-    branches: ["main"]
+    branches: ["main", "master"]
 
 permissions:
   contents: read
@@ -12,98 +12,80 @@ permissions:
 
 jobs:
   lint:
-    name: PHP Lint
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
           php-version: "8.2"
-
-      - name: Lint all PHP files
+      - name: Lint PHP
         run: |
           find . -name "*.php" -not -path "./vendor/*" -print0 \
             | xargs -0 -n1 php -l
 
-  build-and-push:
-    name: Build and push Docker image
+  build:
     runs-on: ubuntu-latest
     needs: lint
-    env:
-      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-      build:
-        name: Build and push image
-        runs-on: ubuntu-latest
-        needs: lint
-        steps:
-          - name: Checkout
-            uses: actions/checkout@v4
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push to GHCR
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/devops-portfolio:latest
+      - name: Login to Docker Hub (optional)
+        if: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Push to Docker Hub (optional)
+        if: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: docker.io/${{ secrets.DOCKERHUB_USERNAME }}/devops-portfolio:latest
 
-          - name: Set up Docker Buildx
-            uses: docker/setup-buildx-action@v3
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    if: ${{ (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') && secrets.SSH_HOST != '' && secrets.SSH_PRIVATE_KEY != '' && secrets.SSH_USER != '' }}
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          script: |
+            set -e
+            if [ -n "${{ secrets.DOCKERHUB_USERNAME }}" ] && [ -n "${{ secrets.DOCKERHUB_TOKEN }}" ]; then
+              echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin || true
+              IMAGE=docker.io/${{ secrets.DOCKERHUB_USERNAME }}/devops-portfolio:latest
+            else
+              IMAGE=ghcr.io/${{ github.repository_owner }}/devops-portfolio:latest
+            fi
 
-          - name: Login to GHCR
-            uses: docker/login-action@v3
-            with:
-              registry: ghcr.io
-              username: ${{ github.actor }}
-              password: ${{ secrets.GITHUB_TOKEN }}
+            if [ -n "${{ secrets.GHCR_PAT }}" ]; then
+              echo "${{ secrets.GHCR_PAT }}" | docker login ghcr.io -u "${{ github.repository_owner }}" --password-stdin || true
+            fi
 
-          - name: Build and push to GHCR
-            uses: docker/build-push-action@v5
-            with:
-              context: .
-              push: true
-              tags: ghcr.io/${{ github.repository_owner }}/devops-portfolio:latest
-
-          - name: Login to Docker Hub (optional)
-            if: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
-            uses: docker/login-action@v3
-            with:
-              username: ${{ secrets.DOCKERHUB_USERNAME }}
-              password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-          - name: Push to Docker Hub (optional)
-            if: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
-            uses: docker/build-push-action@v5
-            with:
-              context: .
-              push: true
-              tags: docker.io/${{ secrets.DOCKERHUB_USERNAME }}/devops-portfolio:latest
-
-      deploy-ssh:
-        name: Deploy via SSH
-        runs-on: ubuntu-latest
-        needs: build
-        if: ${{ github.ref == 'refs/heads/main' && secrets.SSH_HOST != '' && secrets.SSH_PRIVATE_KEY != '' && secrets.SSH_USER != '' }}
-        steps:
-          - name: Deploy via SSH
-            uses: appleboy/ssh-action@v0.1.7
-            with:
-              host: ${{ secrets.SSH_HOST }}
-              username: ${{ secrets.SSH_USER }}
-              key: ${{ secrets.SSH_PRIVATE_KEY }}
-              port: ${{ secrets.SSH_PORT }}
-              script: |
-                set -e
-                if [ -n "${{ secrets.DOCKERHUB_USERNAME }}" ] && [ -n "${{ secrets.DOCKERHUB_TOKEN }}" ]; then
-                  echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin || true
-                  IMAGE=docker.io/${{ secrets.DOCKERHUB_USERNAME }}/devops-portfolio:latest
-                else
-                  IMAGE=ghcr.io/${{ github.repository_owner }}/devops-portfolio:latest
-                fi
-
-                if [ -n "${{ secrets.GHCR_PAT }}" ]; then
-                  echo "${{ secrets.GHCR_PAT }}" | docker login ghcr.io -u "${{ github.repository_owner }}" --password-stdin || true
-                fi
-
-                docker pull "$IMAGE"
-                docker stop devops-portfolio || true
-                docker rm devops-portfolio || true
-                docker run -d --restart=always --name devops-portfolio -p 80:80 "$IMAGE"
+            docker pull "$IMAGE"
             docker stop devops-portfolio || true
             docker rm devops-portfolio || true
             docker run -d --restart=always --name devops-portfolio -p 80:80 "$IMAGE"
+
